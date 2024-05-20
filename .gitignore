@@ -1,0 +1,6 @@
+build/
+sdkconfig
+sdkconfig.old
+KiCad/Kicad-backups
+KiCad/Gerber
+KiCad/3D
