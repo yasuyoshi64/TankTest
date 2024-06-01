@@ -44,11 +44,16 @@ class Application {
         void updateDisplay();               // ディスプレイ更新
         void wifiConnection();              // Wi-Fi接続
         void wifiDisconnection();           // Wi-Fi切断
+        // OTA
+        void ota();
+        static void checkOTA(void* arg);
 
     private:
         int m_LedState;
-        TaskHandle_t m_xHandle; // タスクハンドル
-        QueueHandle_t m_xQueue; // メッセージキュー
+        TaskHandle_t m_xHandle;     // タスクハンドル
+        QueueHandle_t m_xQueue;     // メッセージキュー
+        TaskHandle_t m_xHandleOTA;  // OTAタスクハンドル
+
         SDCard m_sd_card;   // SDカード
         OledDisplay m_oled; // OLED(SSD1306)ディスプレイ
         WiFi m_wifi;        // Wi-Fi

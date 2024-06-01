@@ -22,8 +22,10 @@ class Motor {
         Motor();
 
     public:
+        static void setGroupID(int groupID);
+        static void startTimer();
         void clear();
-        void init(int groupID, gpio_num_t gpioINA, gpio_num_t gpioINB);
+        void init(gpio_num_t gpioINA, gpio_num_t gpioINB);
         void setDirection(MotorDirection md);
         MotorDirection getDirection() { return m_md; }
         void setSpeed(int speed);
@@ -38,13 +40,11 @@ class Motor {
     private:
         TaskHandle_t m_xHandle; // タスクハンドル
         QueueHandle_t m_xQueue; // メッセージキュー
-        int m_groupID;
         gpio_num_t m_gpioINA;   // 制御用GPIO
         gpio_num_t m_gpioINB;   // 制御用GPIO
         MotorDirection m_md;
-        mcpwm_timer_handle_t m_timer;
-        mcpwm_oper_handle_t m_oper;
         mcpwm_cmpr_handle_t m_comparator;
         mcpwm_gen_handle_t m_generator;
         int m_speed;            // 0～100%
+        char tag[100];
 };

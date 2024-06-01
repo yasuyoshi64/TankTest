@@ -12,6 +12,10 @@
 #include "nvs_flash.h"
 #include "driver/gpio.h"
 #include "esp_http_server.h"
+#include "esp_http_client.h"
+#include "esp_https_ota.h"
+#include "esp_crt_bundle.h"
+#include "esp_ota_ops.h"
 #include "cJSON.h"
 #include "esp_log.h"
 
@@ -21,6 +25,9 @@
 #define TAG "Application"
 #define ROOT "/mnt"
 
+#define BUFFSIZE 1024
+static char ota_write_data[BUFFSIZE + 1] = { 0 };
+
 Application app;
 
 // メッセージ種別 (メッセージキュー用)
@@ -28,6 +35,7 @@ enum class AppMessage {
     UpdateDisplay,      // ディスプレイに現在状態表示
     WIFIConnection,     // Wi-Fi接続
     WIFIDisconnection,  // Wi-Fi切断
+    OTA,                // ファームウェアアップデート
     Quit                // 終了
 };
 
@@ -35,6 +43,7 @@ Application::Application() {
     m_LedState = false;
     m_xHandle = NULL;
     m_xQueue = NULL;
+    m_xHandleOTA = NULL;
     m_isWiFi = false;
     m_30sec_off = false;
 }
@@ -46,16 +55,16 @@ void Application::init() {
     // LED初期化
     gpio_reset_pin((gpio_num_t)CONFIG_LED_PIN);
     gpio_set_direction((gpio_num_t)CONFIG_LED_PIN, GPIO_MODE_OUTPUT);
-    led(0);
+    led(1);
 
-    // ボタン初期化(GPIO0)
-    gpio_reset_pin((gpio_num_t)0);
-    gpio_set_intr_type((gpio_num_t)0, GPIO_INTR_NEGEDGE);
-    gpio_set_direction((gpio_num_t)0, GPIO_MODE_INPUT);
-    gpio_pulldown_dis((gpio_num_t)0);
-    gpio_pullup_en((gpio_num_t)0);
-    gpio_install_isr_service(0);
-    gpio_isr_handler_add((gpio_num_t)0, btn0HandlerFunc, (void*)this);
+    // ボタン初期化
+    gpio_reset_pin((gpio_num_t)CONFIG_BTN_PIN);
+    gpio_set_intr_type((gpio_num_t)CONFIG_BTN_PIN, GPIO_INTR_NEGEDGE);
+    gpio_set_direction((gpio_num_t)CONFIG_BTN_PIN, GPIO_MODE_INPUT);
+    gpio_pulldown_dis((gpio_num_t)CONFIG_BTN_PIN);
+    gpio_pullup_en((gpio_num_t)CONFIG_BTN_PIN);
+    gpio_install_isr_service(CONFIG_BTN_PIN);
+    gpio_isr_handler_add((gpio_num_t)CONFIG_BTN_PIN, btn0HandlerFunc, (void*)this);
 
     // タスク作成
     xTaskCreate(Application::app_task, TAG, configMINIMAL_STACK_SIZE * 2, (void*)this, tskIDLE_PRIORITY, &m_xHandle);
@@ -63,20 +72,24 @@ void Application::init() {
     // メッセージキューの初期化
     m_xQueue = xQueueCreate(10, sizeof(AppMessage));
 
+    // モーターコントローラー
+    Motor::setGroupID(0);
+    m_motor_a.init((gpio_num_t)CONFIG_AIN1_PIN, (gpio_num_t)CONFIG_AIN2_PIN);
+    m_motor_b.init((gpio_num_t)CONFIG_BIN1_PIN, (gpio_num_t)CONFIG_BIN2_PIN);
+    Motor::startTimer();
+
+    // サーボコントローラー
+    Servo::setGroupID(1);
+    m_servo_a.init(CONFIG_A_PWM_PIN, 0);
+    m_servo_b.init(CONFIG_B_PWM_PIN, 0);
+    Servo::startTimer();
+
     // SDカード初期化
     m_sd_card.init(ROOT);
     m_sd_card.setMountCallback(mountFunc, this);
 
     // 保存データ初期化
     m_save_data.init(ROOT);
-
-    // モーターコントローラー
-    m_motor_a.init(0, (gpio_num_t)CONFIG_AIN1_PIN, (gpio_num_t)CONFIG_AIN2_PIN);
-    m_motor_b.init(1, (gpio_num_t)CONFIG_BIN1_PIN, (gpio_num_t)CONFIG_BIN2_PIN);
-
-    // サーボコントローラー
-    // m_servo_a.init(CONFIG_A_PWM_PIN, 0);
-    // m_servo_b.init(CONFIG_B_PWM_PIN, 0);
 
     // OLED(SSD1306)ディスプレイ初期化
     m_oled.init(dispInitCompFunc, this);
@@ -111,6 +124,9 @@ void Application::app_task(void* arg) {
                     break;
                 case AppMessage::WIFIDisconnection: // Wi-Fi切断
                     pThis->wifiDisconnection();
+                    break;
+                case AppMessage::OTA:               // ファームウェアアップデート
+                    pThis->ota();
                     break;
                 case AppMessage::Quit:              // 終了
                     loop = false;
@@ -149,7 +165,6 @@ void Application::mountFunc(bool isMount, void* context) {
     // pThis->m_servo_a.setAngle(std::stod(trima == NULL ? "0" : trima));
     // const char* trimb = pThis->m_save_data.get("servo_trim_b");
     // pThis->m_servo_b.setAngle(std::stod(trimb == NULL ? "0" : trimb));
-
 }
 
 // ファイル一覧コールバック
@@ -178,6 +193,10 @@ void Application::wifiConnectFunc(bool isConnect, void* context) {
         // 30秒後に画面を消灯するためにタイマ設定
         pThis->timer30secStart();
 
+        // OTA
+        AppMessage msg = AppMessage::OTA;
+        xQueueSend(pThis->m_xQueue, &msg, portMAX_DELAY);
+        
         // pThis->m_sd_card.fileLists("/document/", fileFunc, pThis);
     } else {
         ESP_LOGW(TAG, "wi-fi disconnect");
@@ -209,14 +228,16 @@ void Application::timer30secFunc(TimerHandle_t xTimer) {
     xQueueSend(pThis->m_xQueue, &msg, portMAX_DELAY);
 }
 
-// 基盤上のボタン押下ハンドラ (GPIO0)
+// 基盤上のボタン押下ハンドラ (GPIO2)
 void IRAM_ATTR Application::btn0HandlerFunc(void* context) {
     Application* pThis = (Application*)context;
-    if (pThis->m_30sec_off == false) {
-        pThis->m_30sec_off = true;
-        pThis->timer30secStart();
-        AppMessage msg = AppMessage::UpdateDisplay;
-        xQueueSend(pThis->m_xQueue, &msg, portMAX_DELAY);
+    if (gpio_get_level((gpio_num_t)CONFIG_BTN_PIN) == 0) {
+        if (pThis->m_30sec_off == false) {
+            pThis->m_30sec_off = true;
+            pThis->timer30secStart();
+            AppMessage msg = AppMessage::UpdateDisplay;
+            xQueueSend(pThis->m_xQueue, &msg, portMAX_DELAY);
+        }
     }
 }
 
@@ -344,23 +365,31 @@ void Application::save(httpd_req_t *req, void* context) {
 // WebSocketコールバック
 char* Application::sebSocketFunc(const char* data, void* context) {
     Application* pThis = (Application*)context;
-    //ESP_LOGI(TAG, "data = %s", data);
+    ESP_LOGI(TAG, "data = %s", data);
     int speed = 0;
     int steering = 0;
+    int servoA = 0;
+    int servoB = 0;
     std::string val = data;
     if (val != "ERROR") {
         std::vector<std::string> words = split(val, ',');
-        if (words.size() == 2) {
+        if (words.size() == 4) {
             std::vector<std::string> arrSpeed = split(words[0], '=');
             std::vector<std::string> arrSteering = split(words[1], '=');
-            if (arrSpeed.size() == 2 && arrSteering.size() == 2) {
+            std::vector<std::string> arrServoA = split(words[2], '=');
+            std::vector<std::string> arrServoB = split(words[3], '=');
+            if (arrSpeed.size() == 2 && arrSteering.size() == 2 && arrServoA.size() == 2 && arrServoB.size() == 2) {
                 //ESP_LOGI(TAG, "speed=%s, steering=%s", arrSpeed[1].c_str(), arrSteering[1].c_str());
                 try {
                     speed = std::stoi(arrSpeed[1]);
                     steering = std::stoi(arrSteering[1]);
+                    servoA = std::stoi(arrServoA[1]);
+                    servoB = std::stoi(arrServoB[1]);
                 } catch (...) {
                     speed = 0;
                     steering = 0;
+                    servoA = 0;
+                    servoB = 0;
                 }
             }
         }
@@ -409,32 +438,178 @@ char* Application::sebSocketFunc(const char* data, void* context) {
         pThis->m_motor_a.setSpeed(steeringabs);
         pThis->m_motor_b.setSpeed(steeringabs);
     }
-
-    // char rl = data[0];
-    // std::string str = &data[1];
-    // int speed = std::stoi(str);
-    // MotorDirection md = MotorDirection::Stop;
-    // if (speed == 0) {
-    //     md = MotorDirection::Stop;
-    // } else if (speed > 0) {
-    //     md = MotorDirection::Foward;
-    // } else if (speed < 0) {
-    //     md = MotorDirection::Back;
-    //     speed *= -1;
-    // }
-    // if (rl == 'R') {
-    //     pThis->m_motor_a.setDirection(md);
-    //     pThis->m_motor_a.setSpeed(speed);
-    // } else {
-    //     pThis->m_motor_b.setDirection(md);
-    //     pThis->m_motor_b.setSpeed(speed);
-    // }
+    pThis->m_servo_a.setAngle(servoA);
+    pThis->m_servo_b.setAngle(servoB);
     return NULL;
+}
+
+void Application::ota() {
+    if (m_xHandleOTA != NULL)
+        return;
+    xTaskCreate(Application::checkOTA, TAG, 8192, (void*)this, tskIDLE_PRIORITY, &m_xHandle);
+}
+
+// アップデートチェック
+void Application::checkOTA(void* arg) {
+    Application *pThis = (Application*)arg;
+    const char* updateuri = pThis->m_configMap["updateuri"].c_str();
+    ESP_LOGI(TAG, "update uri = %s", updateuri);
+    
+    esp_http_client_config_t config = {
+        .url = updateuri,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .keep_alive_enable = true,
+    };
+
+    // バージョンチェック有OTA
+    esp_err_t err;
+    esp_ota_handle_t update_handle = 0 ;
+    const esp_partition_t *update_partition = NULL;
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        ESP_LOGE(TAG, "Failed to initialise HTTP connection");
+        ESP_ERROR_CHECK(ESP_FAIL);
+    }
+    ESP_ERROR_CHECK(esp_http_client_open(client, 0));
+    esp_http_client_fetch_headers(client);
+
+    update_partition = esp_ota_get_next_update_partition(NULL);
+    if (update_partition == NULL) {
+        ESP_LOGE(TAG, "update partition NULL");
+        ESP_ERROR_CHECK(ESP_FAIL);
+    }
+
+    int binary_file_length = 0;
+    bool image_header_was_checked = false;
+    while(1) {
+        int data_read = esp_http_client_read(client, ota_write_data, BUFFSIZE);
+        int http_status = esp_http_client_get_status_code(client);
+        if (http_status == 302) {
+            // リダイレクト
+            esp_http_client_set_redirection(client);
+            ESP_ERROR_CHECK(esp_http_client_open(client, 0));
+            esp_http_client_fetch_headers(client);
+            continue;
+        }
+        if (data_read < 0) {
+            ESP_LOGE(TAG, "Error: SSL data read error");
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client); 
+        } else if (data_read > 0) {
+            if (image_header_was_checked == false) {
+                esp_app_desc_t new_app_info;
+                if (data_read > sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t)) {
+                    memcpy(&new_app_info, &ota_write_data[sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t)], sizeof(esp_app_desc_t));
+                    ESP_LOGI(TAG, "New firmware version: %s", new_app_info.version);
+
+                    esp_app_desc_t running_app_info;
+                    if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK) {
+                        ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
+                    }
+
+                    const esp_partition_t* last_invalid_app = esp_ota_get_last_invalid_partition();
+                    esp_app_desc_t invalid_app_info;
+                    if (esp_ota_get_partition_description(last_invalid_app, &invalid_app_info) == ESP_OK) {
+                        ESP_LOGI(TAG, "Last invalid firmware version: %s", invalid_app_info.version);
+                    }
+
+                    // check current version with last invalid partition
+                    if (last_invalid_app != NULL) {
+                        if (memcmp(invalid_app_info.version, new_app_info.version, sizeof(new_app_info.version)) == 0) {
+                            ESP_LOGW(TAG, "New version is the same as invalid version.");
+                            ESP_LOGW(TAG, "Previously, there was an attempt to launch the firmware with %s version, but it failed.", invalid_app_info.version);
+                            ESP_LOGW(TAG, "The firmware has been rolled back to the previous version.");
+                            esp_http_client_close(client);
+                            esp_http_client_cleanup(client);
+                            vTaskDelete(NULL);
+                        }
+                    }
+
+                    if (memcmp(new_app_info.version, running_app_info.version, sizeof(new_app_info.version)) == 0) {
+                        ESP_LOGW(TAG, "Current running version is the same as a new. We will not continue the update.");
+                        esp_http_client_close(client);
+                        esp_http_client_cleanup(client);
+                        vTaskDelete(NULL);
+                    }
+
+                    image_header_was_checked = true;
+
+                    err = esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle);
+                    if (err != ESP_OK) {
+                        ESP_LOGE(TAG, "esp_ota_begin failed (%s)", esp_err_to_name(err));
+                        esp_http_client_close(client);
+                        esp_http_client_cleanup(client);
+                        esp_ota_abort(update_handle);
+                        ESP_ERROR_CHECK(ESP_FAIL);
+                    }
+                    ESP_LOGI(TAG, "esp_ota_begin succeeded");                    
+                } else {
+                    ESP_LOGE(TAG, "received package is not fit len");
+                    esp_http_client_close(client);
+                    esp_http_client_cleanup(client);
+                    ESP_ERROR_CHECK(ESP_FAIL);
+                }
+            }
+            err = esp_ota_write( update_handle, (const void *)ota_write_data, data_read);
+            if (err != ESP_OK) {
+                esp_http_client_close(client);
+                esp_http_client_cleanup(client);
+                esp_ota_abort(update_handle);
+                ESP_ERROR_CHECK(ESP_FAIL);
+            }
+            binary_file_length += data_read;
+            ESP_LOGD(TAG, "Written image length %d", binary_file_length);
+        } else if (data_read == 0) {
+            if (errno == ECONNRESET || errno == ENOTCONN) {
+                ESP_LOGE(TAG, "Connection closed, errno = %d", errno);
+                break;
+            }
+            if (esp_http_client_is_complete_data_received(client) == true) {
+                ESP_LOGI(TAG, "Connection closed");
+                break;
+            }            
+        }
+    }
+    ESP_LOGI(TAG, "Total Write binary data length: %d", binary_file_length);
+    if (esp_http_client_is_complete_data_received(client) != true) {
+        ESP_LOGE(TAG, "Error in receiving complete file");
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        esp_ota_abort(update_handle);
+        ESP_ERROR_CHECK(ESP_FAIL);
+    }
+
+    err = esp_ota_end(update_handle);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_OTA_VALIDATE_FAILED) {
+            ESP_LOGE(TAG, "Image validation failed, image is corrupted");
+        } else {
+            ESP_LOGE(TAG, "esp_ota_end failed (%s)!", esp_err_to_name(err));
+        }
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        ESP_ERROR_CHECK(ESP_FAIL);
+    }
+
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_set_boot_partition failed (%s)!", esp_err_to_name(err));
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        ESP_ERROR_CHECK(ESP_FAIL);
+    }
+    ESP_LOGI(TAG, "Prepare to restart system!");
+    esp_restart();
 }
 
 extern "C" void app_main(void)
 {
-    nvs_flash_init();     // Flash初期化  (お約束のようなもの)
+    esp_err_t err = nvs_flash_init();     // Flash初期化  (お約束のようなもの)
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ESP_ERROR_CHECK(nvs_flash_init());
+    }
 
     app.init();
 }

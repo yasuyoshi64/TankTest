@@ -8,10 +8,14 @@ const ipAddress = ref("")
 const speedData = ref(0)        // 速度 -100～100
 const steeringData = ref(0)     // ハンドル -100～100
 const steeringTrimData = ref(0) // ハンドルトリム -100～100
+const servoaData = ref(0)       // サーボA -90～90
+const servobData = ref(0)       // サーボB -90～90
 
 const speed = ref(null)
 const steering = ref(null)
 const steeringTrim = ref(null)
+const servoa = ref(null)
+const servob = ref(null)
 // WebSocket
 var ws = null
 const isWSConnected = ref(false)
@@ -49,14 +53,28 @@ watch(steeringData, async(newValue, oldValue) => {
   console.log(`steeringData=${steeringData.value}`)
   ws_send()
 })
+watch(steeringTrimData, async(newValue, oldValue) => {
+  console.log(`steeringTrimData=${steeringTrimData.value}`)
+  ws_send()
+})
+watch(servoaData, async(newValue, oldValue) => {
+  console.log(`servoaData=${servobData.value}`)
+  ws_send()
+})
+watch(servobData, async(newValue, oldValue) => {
+  console.log(`servobData=${servobData.value}`)
+  ws_send()
+})
 
-// "speed=100,steering=0"
+// "speed=100,steering=0,servoa=0,servo=b"
 // speed=-100～100
 // steering=-100～100  (speed=0の場合は超信地旋回)
+// servoa=-90～90
+// servob=-90～90
 function ws_send() {
   try {
     const steeringCalc = speedData.value != 0 || steeringData.value != 0 ? steeringData.value + steeringTrimData.value : steeringData.value
-    const value = `speed=${speedData.value},steering=${steeringCalc}`
+    const value = `speed=${speedData.value},steering=${steeringCalc},servoa=${servoaData.value},servob=${servobData.value}`
     if (isWSConnected.value === true) {
       // [STX][value][ETX][checksum]に変換
       const encoder = new TextEncoder()
@@ -146,13 +164,17 @@ const controlHeight = computed(() => {
         <ControlBall direction="vertical" :min="-100" :max="100" height="100%" :width="controlHeight" v-model="speedData"/>
       </div>
       <div class="flex-item">
-        <div style="height: 25vh;">
+        <div style="height: 15vh; margin-top: 2em;">
+          <ControlBall direction="horizontal" :min="-90" :max="90" type="fixed" :width="controlWidth" height="50" :ballweight="20" :lineWidth="50" v-model="servoaData"/>
+        </div>
+        <div style="height: 15vh;">
+          <ControlBall direction="horizontal" :min="-90" :max="90" type="fixed" :width="controlWidth" height="50" :ballweight="20" :lineWidth="50" v-model="servobData"/>
         </div>
         <div style="height: 40vh;">
           <ControlBall direction="horizontal" :min="-100" :max="100" :width="controlWidth" height="110" v-model="steeringData"/><br/>
         </div>
-        <div style="height: 35vh; position: relative; text-align: center;">
-          <div style="position: absolute; bottom: 5em;">
+        <div style="height: 30vh; position: relative; text-align: center;">
+          <div style="position: absolute; bottom: 4em;">
             Steering Trim<br/>
             <ControlBall direction="horizontal" :min="-100" :max="100" type="fixed" :width="controlWidth" height="50" :ballweight="20" :lineWidth="50" v-model="steeringTrimData"/>
           </div>
