@@ -160,15 +160,17 @@ void Servo::startTimer() {
 }
 
 void Servo::setAngle(double angle) {
-    m_angle = angle;
-    // ESP_LOGI(TAG, "angle = %d", m_angle);
-    // 古いメッセージを全て読み込んで空にする
-    ServoMessage msg;
-    while(m_xQueue != NULL && xQueueReceive(m_xQueue, (void*)&msg, (TickType_t)0) == pdTRUE)
-        ;
-    // 新しいメッセージキューをポスト
-    msg = ServoMessage::Angle;
-    xQueueSend(m_xQueue, &msg, portMAX_DELAY);
+    if (m_angle != angle) {
+        m_angle = angle;
+        // ESP_LOGI(TAG, "angle = %d", m_angle);
+        // 古いメッセージを全て読み込んで空にする
+        ServoMessage msg;
+        while(m_xQueue != NULL && xQueueReceive(m_xQueue, (void*)&msg, (TickType_t)0) == pdTRUE)
+            ;
+        // 新しいメッセージキューをポスト
+        msg = ServoMessage::Angle;
+        xQueueSend(m_xQueue, &msg, portMAX_DELAY);
+    }
 }
 
 void Servo::task(void* arg) {
