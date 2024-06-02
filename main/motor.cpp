@@ -223,10 +223,11 @@ void Motor::speed() {
 void Motor::timer100msFunc(TimerHandle_t xTimer) {
     Motor* pThis = (Motor*)pvTimerGetTimerID(xTimer);
     int oldSpeed = pThis->m_speed;
+    const int add_tick = 5;
     if (pThis->m_speed > pThis->m_speedTarget) {
-        pThis->m_speed = pThis->m_speed - 10 < pThis->m_speedTarget ? pThis->m_speedTarget : pThis->m_speed - 10;
+        pThis->m_speed = pThis->m_speed - add_tick < pThis->m_speedTarget ? pThis->m_speedTarget : pThis->m_speed - add_tick;
     } else if (pThis->m_speed < pThis->m_speedTarget) {
-        pThis->m_speed = pThis->m_speed + 10 > pThis->m_speedTarget ? pThis->m_speedTarget : pThis->m_speed + 10;
+        pThis->m_speed = pThis->m_speed + add_tick > pThis->m_speedTarget ? pThis->m_speedTarget : pThis->m_speed + add_tick;
     }
     if (oldSpeed != pThis->m_speed) {
         // 新しいメッセージキューをポスト
