@@ -206,6 +206,9 @@ void Application::wifiConnectFunc(bool isConnect, void* context) {
     } else {
         ESP_LOGW(TAG, "wi-fi disconnect");
         pThis->m_30sec_off = pThis->m_isWiFi = false;
+
+        AppMessage msg = AppMessage::WIFIConnection;
+        xQueueSend(pThis->m_xQueue, &msg, portMAX_DELAY);
     }
     AppMessage msg = AppMessage::UpdateDisplay;
     xQueueSend(pThis->m_xQueue, &msg, portMAX_DELAY);
