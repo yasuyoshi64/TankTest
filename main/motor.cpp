@@ -37,6 +37,7 @@ void Motor::clear() {
     m_comparator = NULL;
     m_generator = NULL;
     m_speed = 0;
+    m_speedTarget = 0;
 }
 
 void Motor::init(gpio_num_t gpioINA, gpio_num_t gpioINB) {
@@ -52,6 +53,19 @@ void Motor::init(gpio_num_t gpioINA, gpio_num_t gpioINB) {
 
     // メッセージキューの初期化
     m_xQueue = xQueueCreate(10, sizeof(MotorMessage));
+
+    // 100msタイマ
+    char timerName[100];
+    sprintf(timerName, "10mSec%d%d", (int)gpioINA, (int)gpioINB);
+    TimerHandle_t xTimer = xTimerCreate(
+        timerName,
+        pdMS_TO_TICKS(100),
+        pdTRUE,
+        this,
+        timer100msFunc
+    );
+    if (xTimer != NULL)
+        xTimerStart(xTimer, 0);
 
     // INB初期化
     gpio_reset_pin(m_gpioINA);
@@ -155,10 +169,10 @@ void Motor::setDirection(MotorDirection md) {
 }
 
 void Motor::setSpeed(int speed) {
-    m_speed = speed;    
-    // 新しいメッセージキューをポスト
-    MotorMessage msg = MotorMessage::Speed;
-    xQueueSend(m_xQueue, &msg, portMAX_DELAY);
+    m_speedTarget = speed;    
+    // // 新しいメッセージキューをポスト
+    // MotorMessage msg = MotorMessage::Speed;
+    // xQueueSend(m_xQueue, &msg, portMAX_DELAY);
 }
 
 void Motor::task(void* arg) {
@@ -203,5 +217,20 @@ void Motor::speed() {
     gpio_set_level(m_gpioINA, speed2);
     if ((ret = mcpwm_comparator_set_compare_value(m_comparator, (uint32_t)speed1)) != ESP_OK) {
         ESP_LOGE(tag, "mcpwm_comparator_set_compare_value error %d", ret);
+    }
+}
+
+void Motor::timer100msFunc(TimerHandle_t xTimer) {
+    Motor* pThis = (Motor*)pvTimerGetTimerID(xTimer);
+    int oldSpeed = pThis->m_speed;
+    if (pThis->m_speed > pThis->m_speedTarget) {
+        pThis->m_speed = pThis->m_speed - 10 < pThis->m_speedTarget ? pThis->m_speedTarget : pThis->m_speed - 10;
+    } else if (pThis->m_speed < pThis->m_speedTarget) {
+        pThis->m_speed = pThis->m_speed + 10 > pThis->m_speedTarget ? pThis->m_speedTarget : pThis->m_speed + 10;
+    }
+    if (oldSpeed != pThis->m_speed) {
+        // 新しいメッセージキューをポスト
+        MotorMessage msg = MotorMessage::Speed;
+        xQueueSend(pThis->m_xQueue, &msg, portMAX_DELAY);
     }
 }

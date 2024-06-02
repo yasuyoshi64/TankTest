@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/timers.h"
 #include "driver/mcpwm_prelude.h"
 #include "driver/gpio.h"
 
@@ -36,6 +37,8 @@ class Motor {
         static void task(void* arg);
         //
         void speed();
+        // コールバック
+        static void timer100msFunc(TimerHandle_t xTimer);
 
     private:
         TaskHandle_t m_xHandle; // タスクハンドル
@@ -45,6 +48,7 @@ class Motor {
         MotorDirection m_md;
         mcpwm_cmpr_handle_t m_comparator;
         mcpwm_gen_handle_t m_generator;
+        int m_speedTarget;
         int m_speed;            // 0～100%
         char tag[100];
 };

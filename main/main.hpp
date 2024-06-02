@@ -66,4 +66,6 @@ class Application {
         std::map<std::string, std::string> m_configMap{};     // CONFIG
         bool m_isWiFi;
         bool m_30sec_off;
+        bool m_isCheckOTA;
+        bool m_isOTA;
 };

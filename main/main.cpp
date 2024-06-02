@@ -46,6 +46,8 @@ Application::Application() {
     m_xHandleOTA = NULL;
     m_isWiFi = false;
     m_30sec_off = false;
+    m_isCheckOTA = false;
+    m_isOTA = false;
 }
 
 // 初期化
@@ -184,7 +186,10 @@ void Application::dispInitCompFunc(void* context) {
 void Application::wifiConnectFunc(bool isConnect, void* context) {
     Application* pThis = (Application*)context;
     if (isConnect) {
-        pThis->m_30sec_off = pThis->m_isWiFi = true;
+        pThis->m_isWiFi = true;
+        pThis->m_30sec_off = true;
+        pThis->m_isCheckOTA = false;
+        pThis->m_isOTA = false;
         const char* ipAddress = pThis->m_wifi.getIPAddress();
         ESP_LOGI(TAG, "IP Address: %s", ipAddress);
         pThis->led(0);
@@ -246,7 +251,11 @@ void Application::updateDisplay() {
     if (!m_oled.isInitialize())
         return;
     if (m_isWiFi) {
-        if (m_30sec_off) {
+        if (m_isCheckOTA) {
+            m_oled.dispString("check update");
+        } else if (m_isOTA) {
+            m_oled.dispString("now update");
+        } else if (m_30sec_off) {
             ESP_LOGI(TAG, "QRCode output");
             const char* ipAddress = m_wifi.getIPAddress();
             char url[256];
@@ -454,6 +463,11 @@ void Application::checkOTA(void* arg) {
     Application *pThis = (Application*)arg;
     const char* updateuri = pThis->m_configMap["updateuri"].c_str();
     ESP_LOGI(TAG, "update uri = %s", updateuri);
+
+    pThis->m_isCheckOTA = true;
+    pThis->m_isOTA = false;
+    AppMessage msg = AppMessage::UpdateDisplay;
+    xQueueSend(pThis->m_xQueue, &msg, portMAX_DELAY);
     
     esp_http_client_config_t config = {
         .url = updateuri,
@@ -520,6 +534,8 @@ void Application::checkOTA(void* arg) {
                             ESP_LOGW(TAG, "New version is the same as invalid version.");
                             ESP_LOGW(TAG, "Previously, there was an attempt to launch the firmware with %s version, but it failed.", invalid_app_info.version);
                             ESP_LOGW(TAG, "The firmware has been rolled back to the previous version.");
+                            pThis->m_isCheckOTA = false;
+                            xQueueSend(pThis->m_xQueue, &msg, portMAX_DELAY);
                             esp_http_client_close(client);
                             esp_http_client_cleanup(client);
                             vTaskDelete(NULL);
@@ -528,6 +544,8 @@ void Application::checkOTA(void* arg) {
 
                     if (memcmp(new_app_info.version, running_app_info.version, sizeof(new_app_info.version)) == 0) {
                         ESP_LOGW(TAG, "Current running version is the same as a new. We will not continue the update.");
+                        pThis->m_isCheckOTA = false;
+                        xQueueSend(pThis->m_xQueue, &msg, portMAX_DELAY);
                         esp_http_client_close(client);
                         esp_http_client_cleanup(client);
                         vTaskDelete(NULL);
@@ -571,6 +589,11 @@ void Application::checkOTA(void* arg) {
             }            
         }
     }
+
+    pThis->m_isCheckOTA = false;
+    pThis->m_isOTA = true;
+    xQueueSend(pThis->m_xQueue, &msg, portMAX_DELAY);
+
     ESP_LOGI(TAG, "Total Write binary data length: %d", binary_file_length);
     if (esp_http_client_is_complete_data_received(client) != true) {
         ESP_LOGE(TAG, "Error in receiving complete file");
